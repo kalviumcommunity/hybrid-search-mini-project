@@ -10,7 +10,7 @@ const fs = require('fs');
 function loadTestSet(path) {
   const lines = fs.readFileSync(path, 'utf8').trim().split('\n').slice(1);
   return lines.map(line => {
-    const [query, ids] = line.split(',');
+    const [query, ids] = line.replace(/\r$/, '').split(',');
     return { query, correctIds: ids.split(';').map(Number) };
   });
 }
@@ -22,13 +22,31 @@ const results = JSON.parse(fs.readFileSync('search-results.json', 'utf8'));
 // Given two ranked id-lists, return ONE fused id-list (highest RRF score first).
 // RRF score of a doc = sum over each list it appears in of 1 / (k + rank), rank is 1-based.
 function rrfFuse(keywordIds, semanticIds, k = 60) {
-  // ...
+  const scores = new Map();
+
+  keywordIds.forEach((id, idx) => {
+    const rank = idx + 1;
+    scores.set(id, (scores.get(id) || 0) + 1 / (k + rank));
+  });
+
+  semanticIds.forEach((id, idx) => {
+    const rank = idx + 1;
+    scores.set(id, (scores.get(id) || 0) + 1 / (k + rank));
+  });
+
+  return Array.from(scores.keys()).sort((a, b) => scores.get(b) - scores.get(a));
 }
 
 // TODO 2: rank of the first correct id in a list (1-based), or null if none.
 // The optional `cutoff` limits how far down you look (use 10 for recall@10).
 function rankOf(ids, correctIds, cutoff = Infinity) {
-  // ...
+  const limit = Math.min(ids.length, cutoff);
+  for (let i = 0; i < limit; i++) {
+    if (correctIds.includes(ids[i])) {
+      return i + 1;
+    }
+  }
+  return null;
 }
 
 // helpers
@@ -48,8 +66,10 @@ for (const { query, correctIds } of testSet) {
 
   // TODO 3: for each system, push its reciprocal rank and count a recall@10 hit.
   for (const s of systems) {
-    // rrs[s].push(...)
-    // if (correct answer is within the top 10 of lists[s]) hits[s]++
+    rrs[s].push(rr(lists[s], correctIds));
+    if (rankOf(lists[s], correctIds, 10) !== null) {
+      hits[s]++;
+    }
   }
 
   rows.push({ query, kw: rankOf(kw, correctIds), sem: rankOf(sem, correctIds), hyb: rankOf(hyb, correctIds) });
@@ -59,4 +79,16 @@ for (const { query, correctIds } of testSet) {
 // (print 'miss' when the answer is not in a list), then a Summary row with each system's
 // MRR and Recall@10 rounded to 2 decimals.
 const n = testSet.length;
-// console.log(...)
+console.log('| Query | Keyword rank | Semantic rank | Hybrid rank |');
+console.log('|---|---|---|---|');
+for (const row of rows) {
+  const kwRank = row.kw !== null ? row.kw : 'miss';
+  const semRank = row.sem !== null ? row.sem : 'miss';
+  const hybRank = row.hyb !== null ? row.hyb : 'miss';
+  console.log(`| ${row.query} | ${kwRank} | ${semRank} | ${hybRank} |`);
+}
+
+const summaryKw = `MRR ${mean(rrs.keyword).toFixed(2)} · Recall@10 ${(hits.keyword / n).toFixed(2)}`;
+const summarySem = `MRR ${mean(rrs.semantic).toFixed(2)} · Recall@10 ${(hits.semantic / n).toFixed(2)}`;
+const summaryHyb = `MRR ${mean(rrs.hybrid).toFixed(2)} · Recall@10 ${(hits.hybrid / n).toFixed(2)}`;
+console.log(`| **Summary** | **${summaryKw}** | **${summarySem}** | **${summaryHyb}** |`);
